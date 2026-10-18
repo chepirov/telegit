@@ -1,16 +1,3 @@
-"""
-Telegram-бот для мониторинга репозиториев GitHub.
-
-Функциональность:
-- авторизация по токенам (Telegram Bot API + GitHub Personal Access Token);
-- управление подписками на репозитории (/subscribe, /unsubscribe, /list);
-- приём событий через GitHub Webhook (push, pull_request, issues)
-  с проверкой подписи HMAC-SHA256;
-- база данных SQLite для хранения подписок, чатов и фильтров событий;
-- команды /summary, /readme, /deps (поиск зависимостей в репозитории);
-- отправка уведомлений в читаемом виде.
-"""
-
 import os
 import re
 import hmac
@@ -30,10 +17,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-
-# ---------------------------------------------------------------------------
-# 1. Конфигурация и авторизация по токенам
-# ---------------------------------------------------------------------------
 
 load_dotenv()
 
@@ -58,7 +41,6 @@ bot = Bot(token=TELEGRAM_TOKEN,
           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Заголовки для запросов к GitHub API (авторизация по токену)
 GITHUB_HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
     "Accept": "application/vnd.github+json",
@@ -66,12 +48,10 @@ GITHUB_HEADERS = {
 }
 GITHUB_API = "https://api.github.com"
 
-# Репозиторий задаётся в формате owner/repo или полной ссылкой
 REPO_PATTERN = re.compile(
     r"(?:https?://github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)/?$"
 )
 
-# Известные типы событий и их человекочитаемые названия
 KNOWN_EVENTS = {
     "push": "Push (коммиты)",
     "pull_request": "Pull Request",
@@ -83,11 +63,6 @@ def parse_repo(text: str) -> str | None:
     """Извлекает 'owner/repo' из ссылки или строки."""
     match = REPO_PATTERN.search(text.strip())
     return f"{match.group(1)}/{match.group(2)}" if match else None
-
-
-# ---------------------------------------------------------------------------
-# 2. База данных SQLite: подписки, чаты, фильтры
-# ---------------------------------------------------------------------------
 
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
@@ -184,11 +159,6 @@ def get_subscribers(repo: str, event_type: str) -> list[int]:
     return [r["chat_id"] for r in rows
             if event_type in r["events_filter"].split(",")]
 
-
-# ---------------------------------------------------------------------------
-# 3. Модуль работы с GitHub API
-# ---------------------------------------------------------------------------
-
 async def github_get(path: str, params: dict | None = None) -> dict | list | None:
     """Выполняет GET-запрос к GitHub API с авторизацией по токену."""
     async with httpx.AsyncClient(timeout=15) as client:
@@ -204,7 +174,7 @@ async def fetch_summary(repo: str) -> str:
     """Сводка по репозиторию: статистика и последние коммиты."""
     info = await github_get(f"/repos/{repo}")
     if not info:
-        return f"❌ Репозиторий <b>{repo}</b> не найден или нет доступа."
+        return f"Репозиторий <b>{repo}</b> не найден или нет доступа."
 
     commits = await github_get(f"/repos/{repo}/commits",
                                params={"per_page": 5}) or []
@@ -212,24 +182,23 @@ async def fetch_summary(repo: str) -> str:
                            params={"state": "open", "per_page": 5}) or []
     issues = await github_get(f"/repos/{repo}/issues",
                               params={"state": "open", "per_page": 5}) or []
-    # issues endpoint включает PR, отфильтруем их
     issues = [i for i in issues if "pull_request" not in i]
 
     lines = [
-        f"📊 <b>Сводка: {repo}</b>",
-        f"⭐ Звёзды: {info['stargazers_count']}   "
-        f"🍴 Форки: {info['forks_count']}   "
-        f"👀 Наблюдатели: {info['watchers_count']}",
-        f"📝 Описание: {info.get('description') or '—'}",
-        f"🌿 Ветка по умолчанию: {info['default_branch']}",
+        f"<b>Сводка: {repo}</b>",
+        f"Звёзды: {info['stargazers_count']}   "
+        f"Форки: {info['forks_count']}   "
+        f"Наблюдатели: {info['watchers_count']}",
+        f"Описание: {info.get('description') or '—'}",
+        f"Ветка по умолчанию: {info['default_branch']}",
         "",
-        f"🔀 <b>Открытые PR ({len(prs)}):</b>",
+        f"<b>Открытые PR ({len(prs)}):</b>",
     ]
     lines += [f"  • #{p['number']} {p['title']} ({p['user']['login']})"
               for p in prs] or ["  — нет —"]
-    lines.append(f"\n❗ <b>Открытые issue ({len(issues)}):</b>")
+    lines.append(f"\n <b>Открытые issue ({len(issues)}):</b>")
     lines += [f"  • #{i['number']} {i['title']}" for i in issues] or ["  — нет —"]
-    lines.append("\n🕒 <b>Последние коммиты:</b>")
+    lines.append("\n <b>Последние коммиты:</b>")
     lines += [
         f"  • <code>{c['sha'][:7]}</code> "
         f"{c['commit']['message'].splitlines()[0][:60]} "
@@ -243,18 +212,15 @@ async def fetch_readme(repo: str) -> str:
     """Получает и декодирует README репозитория."""
     data = await github_get(f"/repos/{repo}/readme")
     if not data:
-        return f"❌ README не найден в репозитории <b>{repo}</b>."
+        return f"README не найден в репозитории <b>{repo}</b>."
     content = base64.b64decode(data["content"]).decode("utf-8",
                                                        errors="replace")
-    # Telegram ограничивает сообщение 4096 символами
     if len(content) > 3500:
         content = content[:3500] + "\n\n…(обрезано, полный текст на GitHub)"
-    return (f"📖 <b>README: {repo}</b>\n"
+    return (f"<b>README: {repo}</b>\n"
             f"<a href=\"{data['html_url']}\">Открыть на GitHub</a>\n\n"
             f"{content}")
 
-
-# Файлы, в которых обычно описаны зависимости
 DEPENDENCY_FILES = [
     "requirements.txt", "pyproject.toml", "Pipfile",
     "package.json", "go.mod", "Cargo.toml", "pom.xml",
@@ -275,27 +241,22 @@ async def fetch_dependencies(repo: str) -> str:
                 found.append((filename, content))
 
     if not found:
-        return (f"🔍 В репозитории <b>{repo}</b> не найдено файлов "
+        return (f"В репозитории <b>{repo}</b> не найдено файлов "
                 f"зависимостей (искали: {', '.join(DEPENDENCY_FILES)}).")
 
-    parts = [f"📦 <b>Зависимости: {repo}</b>"]
+    parts = [f"<b>Зависимости: {repo}</b>"]
     for filename, content in found:
         if len(content) > 1500:
             content = content[:1500] + "\n…(обрезано)"
         parts.append(f"\n<b>📄 {filename}:</b>\n<pre>{content}</pre>")
     return "\n".join(parts)
 
-
-# ---------------------------------------------------------------------------
-# 4. Команды Telegram-бота
-# ---------------------------------------------------------------------------
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     register_chat(message.chat.id, message.from_user.username
                   if message.from_user else None)
     await message.answer(
-        "👋 Привет! Я бот-ассистент для мониторинга GitHub.\n\n"
+        "Привет! Я бот-ассистент для мониторинга GitHub.\n\n"
         "<b>Подписки:</b>\n"
         "/subscribe owner/repo — подписаться на репозиторий\n"
         "/unsubscribe owner/repo — отписаться\n"
@@ -322,28 +283,27 @@ async def cmd_subscribe(message: types.Message):
     parts = args[1].split()
     repo = parse_repo(parts[0])
     if not repo:
-        await message.answer("❌ Не удалось распознать репозиторий. "
+        await message.answer(" Не удалось распознать репозиторий. "
                              "Укажите в формате owner/repo.")
         return
 
-    # Необязательный фильтр событий: /subscribe owner/repo push,issues
     events = "push,pull_request,issues"
     if len(parts) > 1:
         requested = [e.strip() for e in parts[1].split(",") if e.strip()]
         invalid = [e for e in requested if e not in KNOWN_EVENTS]
         if invalid:
             await message.answer(
-                f"❌ Неизвестные события: {', '.join(invalid)}\n"
+                f"Неизвестные события: {', '.join(invalid)}\n"
                 f"Доступные: {', '.join(KNOWN_EVENTS)}")
             return
         events = ",".join(requested)
 
     if add_subscription(message.chat.id, repo, events):
         await message.answer(
-            f"✅ Подписка оформлена!\nРепозиторий: <b>{repo}</b>\n"
+            f"Подписка оформлена!\nРепозиторий: <b>{repo}</b>\n"
             f"События: {', '.join(KNOWN_EVENTS[e] for e in events.split(','))}")
     else:
-        await message.answer(f"ℹ️ Вы уже подписаны на <b>{repo}</b>.")
+        await message.answer(f"Вы уже подписаны на <b>{repo}</b>.")
 
 
 @dp.message(Command("unsubscribe"))
@@ -354,9 +314,9 @@ async def cmd_unsubscribe(message: types.Message):
         await message.answer("Использование: /unsubscribe owner/repo")
         return
     if remove_subscription(message.chat.id, repo):
-        await message.answer(f"✅ Подписка на <b>{repo}</b> удалена.")
+        await message.answer(f"Подписка на <b>{repo}</b> удалена.")
     else:
-        await message.answer(f"ℹ️ Вы не были подписаны на <b>{repo}</b>.")
+        await message.answer(f"Вы не были подписаны на <b>{repo}</b>.")
 
 
 @dp.message(Command("list"))
@@ -366,7 +326,7 @@ async def cmd_list(message: types.Message):
         await message.answer("У вас пока нет подписок. "
                              "Добавьте: /subscribe owner/repo")
         return
-    lines = ["📋 <b>Ваши подписки:</b>"]
+    lines = ["<b>Ваши подписки:</b>"]
     for s in subs:
         events = ", ".join(KNOWN_EVENTS.get(e, e)
                            for e in s["events_filter"].split(","))
@@ -381,7 +341,7 @@ async def _repo_arg_or_reply(message: types.Message, usage: str) -> str | None:
         repo = parse_repo(args[1])
         if repo:
             return repo
-        await message.answer("❌ Не удалось распознать репозиторий.")
+        await message.answer("Не удалось распознать репозиторий.")
         return None
     subs = get_subscriptions(message.chat.id)
     if len(subs) == 1:
@@ -394,7 +354,7 @@ async def _repo_arg_or_reply(message: types.Message, usage: str) -> str | None:
 async def cmd_summary(message: types.Message):
     repo = await _repo_arg_or_reply(message, "/summary owner/repo")
     if repo:
-        await message.answer("⏳ Формирую сводку…")
+        await message.answer("Формирую сводку…")
         await message.answer(await fetch_summary(repo),
                              disable_web_page_preview=True)
 
@@ -403,7 +363,7 @@ async def cmd_summary(message: types.Message):
 async def cmd_readme(message: types.Message):
     repo = await _repo_arg_or_reply(message, "/readme owner/repo")
     if repo:
-        await message.answer("⏳ Запрашиваю README…")
+        await message.answer("Запрашиваю README…")
         await message.answer(await fetch_readme(repo),
                              disable_web_page_preview=True)
 
@@ -412,19 +372,14 @@ async def cmd_readme(message: types.Message):
 async def cmd_deps(message: types.Message):
     repo = await _repo_arg_or_reply(message, "/deps owner/repo")
     if repo:
-        await message.answer("⏳ Ищу зависимости…")
+        await message.answer("Ищу зависимости…")
         await message.answer(await fetch_dependencies(repo),
                              disable_web_page_preview=True)
-
-
-# ---------------------------------------------------------------------------
-# 5. Webhook: приём событий GitHub и читаемые уведомления
-# ---------------------------------------------------------------------------
 
 def verify_signature(body: bytes, signature: str | None) -> bool:
     """Проверка подлинности webhook по секрету (HMAC-SHA256)."""
     if not WEBHOOK_SECRET:
-        return True  # секрет не задан — проверка отключена (dev-режим)
+        return True 
     if not signature:
         return False
     expected = "sha256=" + hmac.new(
@@ -439,9 +394,9 @@ def format_push(payload: dict) -> str:
     branch = payload.get("ref", "").replace("refs/heads/", "")
     commits = payload.get("commits", [])
     lines = [
-        f"🚀 <b>Push в {repo}</b>",
-        f"🌿 Ветка: <code>{branch}</code>   👤 Автор: {pusher}",
-        f"📝 Коммитов: {len(commits)}",
+        f"<b>Push в {repo}</b>",
+        f"Ветка: <code>{branch}</code>   👤 Автор: {pusher}",
+        f"Коммитов: {len(commits)}",
     ]
     for c in commits[:5]:
         lines.append(
@@ -458,10 +413,10 @@ def format_pull_request(payload: dict) -> str:
     action = payload.get("action", "?")
     merged = " (слит 🎉)" if pr.get("merged") else ""
     return (
-        f"🔀 <b>Pull Request {action}{merged} в {repo}</b>\n"
+        f"<b>Pull Request {action}{merged} в {repo}</b>\n"
         f"#{pr.get('number')} {pr.get('title')}\n"
-        f"👤 Автор: {pr.get('user', {}).get('login', '?')}\n"
-        f"🌿 {pr.get('head', {}).get('ref', '?')} → "
+        f"Автор: {pr.get('user', {}).get('login', '?')}\n"
+        f"{pr.get('head', {}).get('ref', '?')} → "
         f"{pr.get('base', {}).get('ref', '?')}\n"
         f"<a href=\"{pr.get('html_url', '')}\">Открыть на GitHub</a>"
     )
@@ -472,9 +427,9 @@ def format_issue(payload: dict) -> str:
     issue = payload.get("issue", {})
     action = payload.get("action", "?")
     return (
-        f"❗ <b>Issue {action} в {repo}</b>\n"
+        f"<b>Issue {action} в {repo}</b>\n"
         f"#{issue.get('number')} {issue.get('title')}\n"
-        f"👤 Автор: {issue.get('user', {}).get('login', '?')}\n"
+        f"Автор: {issue.get('user', {}).get('login', '?')}\n"
         f"<a href=\"{issue.get('html_url', '')}\">Открыть на GitHub</a>"
     )
 
